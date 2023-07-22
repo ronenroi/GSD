@@ -1,6 +1,8 @@
+import numpy as np
 import torch
 import torch.utils.data
 from torch import nn
+import torchvision.models as models
 
 
 class ResidualBlock(nn.Module):
@@ -49,63 +51,72 @@ class HSICClassifier(nn.Module):
         self.feature_opt = feature_opt
         self.feature_len = feature_len
         self.gap_norm_opt = gap_norm_opt
+        self.model = models.resnet18(pretrained=True)
 
-        conv_filts = 128
-        res_filts = 128
-        skip_filts = 128
-        kernel_size = 3
+        conv1_old = self.model.conv1
+        conv1_new = nn.Conv2d(4,conv1_old.out_channels,
+                              kernel_size=conv1_old.kernel_size,stride=conv1_old.stride,
+                              padding=conv1_old.padding,dilation=conv1_old.dilation,
+                              bias=conv1_old.bias
+                              )
+        with torch.no_grad():
+            new_weights = torch.tensor(torch.hstack([conv1_old.weight.data,conv1_old.weight.data.mean(1).unsqueeze(1)]))
+            conv1_new.weight = nn.Parameter(new_weights)
+            self.model.conv1 = conv1_new
+        self.activation_size = self.model.fc.in_features
+        self.model.fc = nn.Identity()
+        # self.model = torch.nn.Sequential(*(list(self.model.children())[:-1]))
 
-        self.activation_size = 512
-        padding = kernel_size//2
-
-        self.conv1 = nn.Sequential(
-            nn.Conv1d(in_channels=in_channels, out_channels=conv_filts, kernel_size=kernel_size, stride=1,
-                      padding=padding, bias=False, dilation=1),
-            nn.MaxPool1d(kernel_size=kernel_size, stride=2, padding=padding),
-        )
-        self.res_block2 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
-                                        skip_filts=skip_filts, dilation_rate=2, res=True, skip=True)
-
-        self.res_block3 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
-                                        skip_filts=skip_filts, dilation_rate=4, res=True, skip=True)
-
-        self.res_block4 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
-                                        skip_filts=skip_filts, dilation_rate=8, res=True, skip=True)
-
-        self.res_block5 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
-                                        skip_filts=skip_filts, dilation_rate=16, res=True, skip=True)
-
-        self.res_block6 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
-                                        skip_filts=skip_filts, dilation_rate=32, res=True, skip=True)
-
-        self.res_block7 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
-                                        skip_filts=skip_filts, dilation_rate=64, res=True, skip=True)
-
-        self.res_block8 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
-                                        skip_filts=skip_filts, dilation_rate=128, res=True, skip=True)
-
-        self.res_block9 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
-                                        skip_filts=skip_filts, dilation_rate=256, res=True, skip=True)
-
-        self.res_block10 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
-                                         skip_filts=skip_filts, dilation_rate=512, res=False, skip=True)
-
-        self.tail = nn.Sequential(
-            nn.ReLU(),
-
-            nn.Dropout(p=0.3),
-            nn.Conv1d(in_channels=skip_filts, out_channels=256, kernel_size=kernel_size, stride=1,
-                      padding=padding, bias=False, dilation=1),
-            nn.ReLU(),
-            nn.MaxPool1d(kernel_size=kernel_size, stride=1, padding=padding),
-            nn.Dropout(p=0.3),
-            nn.Conv1d(in_channels=256, out_channels=512, kernel_size=kernel_size, stride=1,
-                      padding=padding, bias=False, dilation=1),
-            nn.ReLU(),
-            nn.MaxPool1d(kernel_size=kernel_size, stride=1, padding=padding),
-            nn.Dropout(p=0.3)
-        )
-
+        # padding = kernel_size//2
+        #
+        # self.conv1 = nn.Sequential(
+        #     nn.Conv1d(in_channels=in_channels, out_channels=conv_filts, kernel_size=kernel_size, stride=1,
+        #               padding=padding, bias=False, dilation=1),
+        #     nn.MaxPool1d(kernel_size=kernel_size, stride=2, padding=padding),
+        # )
+        # self.res_block2 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
+        #                                 skip_filts=skip_filts, dilation_rate=2, res=True, skip=True)
+        #
+        # self.res_block3 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
+        #                                 skip_filts=skip_filts, dilation_rate=4, res=True, skip=True)
+        #
+        # self.res_block4 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
+        #                                 skip_filts=skip_filts, dilation_rate=8, res=True, skip=True)
+        #
+        # self.res_block5 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
+        #                                 skip_filts=skip_filts, dilation_rate=16, res=True, skip=True)
+        #
+        # self.res_block6 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
+        #                                 skip_filts=skip_filts, dilation_rate=32, res=True, skip=True)
+        #
+        # self.res_block7 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
+        #                                 skip_filts=skip_filts, dilation_rate=64, res=True, skip=True)
+        #
+        # self.res_block8 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
+        #                                 skip_filts=skip_filts, dilation_rate=128, res=True, skip=True)
+        #
+        # self.res_block9 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
+        #                                 skip_filts=skip_filts, dilation_rate=256, res=True, skip=True)
+        #
+        # self.res_block10 = ResidualBlock(kernel_size=kernel_size, conv_filts=conv_filts, res_filts=res_filts,
+        #                                  skip_filts=skip_filts, dilation_rate=512, res=False, skip=True)
+        #
+        # self.tail = nn.Sequential(
+        #     nn.ReLU(),
+        #
+        #     nn.Dropout(p=0.3),
+        #     nn.Conv1d(in_channels=skip_filts, out_channels=256, kernel_size=kernel_size, stride=1,
+        #               padding=padding, bias=False, dilation=1),
+        #     nn.ReLU(),
+        #     nn.MaxPool1d(kernel_size=kernel_size, stride=1, padding=padding),
+        #     nn.Dropout(p=0.3),
+        #     nn.Conv1d(in_channels=256, out_channels=512, kernel_size=kernel_size, stride=1,
+        #               padding=padding, bias=False, dilation=1),
+        #     nn.ReLU(),
+        #     nn.MaxPool1d(kernel_size=kernel_size, stride=1, padding=padding),
+        #     nn.Dropout(p=0.3)
+        # )
+        #
         if gap_norm_opt == 'batch_norm':
             self.batch_norm = nn.BatchNorm1d(num_features=self.activation_size)
 
@@ -118,47 +129,47 @@ class HSICClassifier(nn.Module):
         self.gradients = None
 
     def forward(self, x, features=None):
-        skips = list()
+        # skips = list()
+        output = self.model(x)
+        # out = self.conv1(x)
+        #
+        # outputs = self.res_block2(out)
+        # skips.append(outputs['skip'])
+        #
+        # outputs = self.res_block3(outputs['res'])
+        # skips.append(outputs['skip'])
+        #
+        # outputs = self.res_block4(outputs['res'])
+        # skips.append(outputs['skip'])
+        #
+        # outputs = self.res_block5(outputs['res'])
+        # skips.append(outputs['skip'])
+        #
+        # outputs = self.res_block6(outputs['res'])
+        # skips.append(outputs['skip'])
+        #
+        # outputs = self.res_block7(outputs['res'])
+        # skips.append(outputs['skip'])
+        #
+        # outputs = self.res_block8(outputs['res'])
+        # skips.append(outputs['skip'])
+        #
+        # outputs = self.res_block9(outputs['res'])
+        # skips.append(outputs['skip'])
+        #
+        # outputs = self.res_block10(outputs['res'])
+        # skips.append(outputs['skip'])
+        #
+        # output = 0
+        # for skip in skips:
+        #     output += skip
+        #
+        # output = self.tail(output)
 
-        out = self.conv1(x)
+        gap = torch.mean(output, dim=0)[None]
 
-        outputs = self.res_block2(out)
-        skips.append(outputs['skip'])
-
-        outputs = self.res_block3(outputs['res'])
-        skips.append(outputs['skip'])
-
-        outputs = self.res_block4(outputs['res'])
-        skips.append(outputs['skip'])
-
-        outputs = self.res_block5(outputs['res'])
-        skips.append(outputs['skip'])
-
-        outputs = self.res_block6(outputs['res'])
-        skips.append(outputs['skip'])
-
-        outputs = self.res_block7(outputs['res'])
-        skips.append(outputs['skip'])
-
-        outputs = self.res_block8(outputs['res'])
-        skips.append(outputs['skip'])
-
-        outputs = self.res_block9(outputs['res'])
-        skips.append(outputs['skip'])
-
-        outputs = self.res_block10(outputs['res'])
-        skips.append(outputs['skip'])
-
-        output = 0
-        for skip in skips:
-            output += skip
-
-        output = self.tail(output)
-
-        gap = torch.mean(output, dim=2)
-
-        if self.gap_norm_opt == 'batch_norm':
-            gap = self.batch_norm(gap)
+        # if self.gap_norm_opt == 'batch_norm':
+        #     gap = self.batch_norm(gap)
 
         if ('concat' in self.feature_opt.lower()) and (self.feature_len > 0):
             gap = torch.cat([gap, features], dim=1)
@@ -167,7 +178,7 @@ class HSICClassifier(nn.Module):
         weight_fc = list(self.fc_layer.parameters())[0][:, :output.shape[1]]
         weight_fc_tile = weight_fc.repeat(output.shape[0], 1, 1)
 
-        cam = torch.bmm(weight_fc_tile, output)
+        cam = torch.bmm(weight_fc_tile, output.unsqueeze(2))
         return logits, cam, gap[:, :self.activation_size]
 
 
