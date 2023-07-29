@@ -45,7 +45,7 @@ class HSICLoss:
         self.external_feature_std = external_feature_std
 
     def calc_loss(self, gap, feature):
-        loss = torch.zeros(1)
+        loss = torch.zeros(1,device=self.device)
         if self.flag_calc_loss:
             # calculate median distance between all pairs of points
             med_dist = np.median(pdist(gap.detach().cpu().numpy(), metric='euclidean').reshape(-1, 1))

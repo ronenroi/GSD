@@ -45,26 +45,27 @@ class ResidualBlock(nn.Module):
 
 
 class HSICClassifier(nn.Module):
-    def __init__(self, num_classes, in_channels, feature_opt='None', feature_len=0, gap_norm_opt='batch_norm'):
+    def __init__(self, num_classes,  dict_features, feature_len=0, gap_norm_opt='batch_norm'):
         super(HSICClassifier, self).__init__()
         self.num_classes = num_classes
-        self.feature_opt = feature_opt
+        self.feature_opt = dict_features['feature_opt']
         self.feature_len = feature_len
         self.gap_norm_opt = gap_norm_opt
-        self.model = models.resnet18(pretrained=True)
+        if dict_features['learned_features']:
+            self.model = models.resnet18(weights=models.resnet.ResNet18_Weights.IMAGENET1K_V1)
 
-        conv1_old = self.model.conv1
-        conv1_new = nn.Conv2d(4,conv1_old.out_channels,
-                              kernel_size=conv1_old.kernel_size,stride=conv1_old.stride,
-                              padding=conv1_old.padding,dilation=conv1_old.dilation,
-                              bias=conv1_old.bias
-                              )
-        with torch.no_grad():
-            new_weights = torch.tensor(torch.hstack([conv1_old.weight.data,conv1_old.weight.data.mean(1).unsqueeze(1)]))
-            conv1_new.weight = nn.Parameter(new_weights)
-            self.model.conv1 = conv1_new
-        self.activation_size = self.model.fc.in_features
-        self.model.fc = nn.Identity()
+            conv1_old = self.model.conv1
+            conv1_new = nn.Conv2d(4,conv1_old.out_channels,
+                                  kernel_size=conv1_old.kernel_size,stride=conv1_old.stride,
+                                  padding=conv1_old.padding,dilation=conv1_old.dilation,
+                                  bias=conv1_old.bias
+                                  )
+            with torch.no_grad():
+                new_weights = torch.tensor(torch.hstack([conv1_old.weight.data,conv1_old.weight.data.mean(1).unsqueeze(1)]))
+                conv1_new.weight = nn.Parameter(new_weights)
+                self.model.conv1 = conv1_new
+            self.activation_size = self.model.fc.in_features
+            self.model.fc = nn.Identity()
         # self.model = torch.nn.Sequential(*(list(self.model.children())[:-1]))
 
         # padding = kernel_size//2
@@ -117,69 +118,45 @@ class HSICClassifier(nn.Module):
         #     nn.Dropout(p=0.3)
         # )
         #
-        if gap_norm_opt == 'batch_norm':
-            self.batch_norm = nn.BatchNorm1d(num_features=self.activation_size)
-
+            if gap_norm_opt == 'batch_norm':
+                self.batch_norm = nn.BatchNorm1d(num_features=self.activation_size)
+        else:
+            self.activation_size = 0
+            self.model = None
         ext_rep_size = self.feature_len
         fc_layer_in_size = self.activation_size + ext_rep_size*int('concat' in self.feature_opt.lower())
-        self.fc_layer = nn.Linear(in_features=fc_layer_in_size, out_features=self.num_classes, bias=False)
+        # self.fc_layer = nn.Linear(in_features=fc_layer_in_size, out_features=self.num_classes, bias=False)
+        self.fc_layer = nn.Linear(in_features=fc_layer_in_size, out_features=self.num_classes, bias=True)
 
-        self.relu = nn.ReLU()
+        self.relu = nn.ReLU(inplace=True)
 
         self.gradients = None
 
     def forward(self, x, features=None):
         # skips = list()
-        output = self.model(x)
-        # out = self.conv1(x)
-        #
-        # outputs = self.res_block2(out)
-        # skips.append(outputs['skip'])
-        #
-        # outputs = self.res_block3(outputs['res'])
-        # skips.append(outputs['skip'])
-        #
-        # outputs = self.res_block4(outputs['res'])
-        # skips.append(outputs['skip'])
-        #
-        # outputs = self.res_block5(outputs['res'])
-        # skips.append(outputs['skip'])
-        #
-        # outputs = self.res_block6(outputs['res'])
-        # skips.append(outputs['skip'])
-        #
-        # outputs = self.res_block7(outputs['res'])
-        # skips.append(outputs['skip'])
-        #
-        # outputs = self.res_block8(outputs['res'])
-        # skips.append(outputs['skip'])
-        #
-        # outputs = self.res_block9(outputs['res'])
-        # skips.append(outputs['skip'])
-        #
-        # outputs = self.res_block10(outputs['res'])
-        # skips.append(outputs['skip'])
-        #
-        # output = 0
-        # for skip in skips:
-        #     output += skip
-        #
-        # output = self.tail(output)
+        if self.model is not None:
+            output = self.model(x)
+            gap = torch.mean(output, dim=0)[None]
 
-        gap = torch.mean(output, dim=0)[None]
+            # if self.gap_norm_opt == 'batch_norm':
+            #     gap = self.batch_norm(gap)
 
-        # if self.gap_norm_opt == 'batch_norm':
-        #     gap = self.batch_norm(gap)
+            if ('concat' in self.feature_opt.lower()) and (self.feature_len > 0):
+                gap = torch.cat([gap, features], dim=1)
 
-        if ('concat' in self.feature_opt.lower()) and (self.feature_len > 0):
-            gap = torch.cat([gap, features], dim=1)
+            logits = self.fc_layer(gap)
+            weight_fc = list(self.fc_layer.parameters())[0][:, :output.shape[1]]
+            weight_fc_tile = weight_fc.repeat(output.shape[0], 1, 1)
 
-        logits = self.fc_layer(gap)
-        weight_fc = list(self.fc_layer.parameters())[0][:, :output.shape[1]]
-        weight_fc_tile = weight_fc.repeat(output.shape[0], 1, 1)
+            cam = torch.bmm(weight_fc_tile, output.unsqueeze(2))
+            gap=gap[:, :self.activation_size]
+        else:
+            logits = self.fc_layer(features)
+            cam=None
+            gap=None
 
-        cam = torch.bmm(weight_fc_tile, output.unsqueeze(2))
-        return logits, cam, gap[:, :self.activation_size]
+
+        return logits, cam, gap
 
 
 class MLP1Layer(nn.Module):

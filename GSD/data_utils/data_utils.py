@@ -89,14 +89,14 @@ def image_mosaic(data_path,save_path,Ncols=4):
 
     im = Image.fromarray(A)
     im.show()
-    im.save('r02c02.jpeg')
+    im.save('r02c04.jpeg')
     print()
 
 
 
 
 if __name__ == "__main__":
-    data_path = '/media/roironen/8AAE21F5AE21DB09/Data/GSD/exp2/e2p3/Images'
+    data_path = '/media/roironen/8AAE21F5AE21DB09/Data/GSD/exp4/e4p6/Images'
     save_path = '/home/roironen/GSD/GSD/data/'
     image_mosaic(data_path,save_path)
 

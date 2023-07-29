@@ -14,13 +14,19 @@ from GSD.train.train_utils import get_device, AnnealingRestartScheduler
 
 # experiment parameters
 lambda_hsic = 500
-feature_opt = 'HSIC+Concat'  # {'None', 'Concat', 'HSIC', 'HSIC+Concat'}
-feature_subset = 'rr'
+feature_opt = 'Concat'  # {'None', 'Concat', 'HSIC', 'HSIC+Concat'}
+engineered_features = True
+learned_features = False
+feature_subset = 'ALL'
+dict_features = {'feature_opt':feature_opt,
+                 'feature_subset':feature_subset,
+                 'engineered_features':engineered_features,
+                 'learned_features':learned_features}
 exp_name = f"main_task_lambda{lambda_hsic}_{feature_subset}"
 
 # training parameters
 update_lambda = True
-lr = 0.001
+lr = 0.001 *0.1
 num_epochs = 100
 batch_size = 1
 cuda_id = 0
@@ -31,10 +37,10 @@ if not os.path.exists(file_dir):
 
 device = get_device(cuda_id)
 
-train_loader, val_loader, _ = create_dataloaders(batch_size, feature_subset, feature_opt, naf=True)
+train_loader, val_loader, _ = create_dataloaders(batch_size, dict_features)
 
-model = HSICClassifier(num_classes=2, in_channels=1, feature_len=train_loader.dataset.feature_len,
-                       feature_opt=feature_opt, gap_norm_opt='batch_norm').to(device)
+model = HSICClassifier(num_classes=2, feature_len=train_loader.dataset.feature_len,
+                       dict_features=dict_features, gap_norm_opt='batch_norm').to(device)
 
 optimizer = optim.Adam(model.parameters(), lr=lr, betas=(0.95, 0.99), eps=1e-08, weight_decay=0, amsgrad=False)
 classification_criterion = nn.CrossEntropyLoss()
@@ -50,7 +56,11 @@ def train(epoch, lambda_hsic):
     train_loss = 0
     correct = 0
     for batch_idx, (data, target, eng_features) in enumerate(tqdm(train_loader)):
-        data, target, eng_features = data.squeeze(0).to(device), target.to(device), eng_features.squeeze(0).to(device)
+        if data.shape[0] > 0:
+            data, target, eng_features = data.squeeze(0).to(device), target.to(device), eng_features.squeeze(0).to(device)
+        else:
+            target, eng_features = target.to(device), eng_features.squeeze(0).to(
+                device)
         optimizer.zero_grad()
         for g in optimizer.param_groups:
             g['lr'] = lr_scheduler.lr
