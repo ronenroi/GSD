@@ -37,7 +37,7 @@ if not os.path.exists(file_dir):
 
 device = get_device(cuda_id)
 
-train_loader, val_loader, _ = create_dataloaders(batch_size, dict_features)
+train_loader, val_loader, test_loader = create_dataloaders(batch_size, dict_features)
 
 model = HSICClassifier(num_classes=2, feature_len=train_loader.dataset.feature_len,
                        dict_features=dict_features, gap_norm_opt='batch_norm').to(device)
@@ -99,13 +99,13 @@ def valid_or_test(mode, perf_dict=None):
     if perf_dict is None:
         perf_dict = {'accuracy': [], 'f1': {'naf': [], 'af': []}}
     model.eval()
-    val_loss = 0
+    tot_loss = 0
     correct = 0
     pred_list = []
     label_list = []
     with torch.no_grad():
-
-        for batch_idx, (data, target, eng_features) in enumerate(val_loader):
+        loader = val_loader if mode=='valid' else test_loader
+        for batch_idx, (data, target, eng_features) in enumerate(loader):
             data, target, eng_features = data.squeeze(0).to(device), target.to(device), eng_features.squeeze(0).to(device)
             logits, _, gap = model(data, eng_features)
 
@@ -113,7 +113,7 @@ def valid_or_test(mode, perf_dict=None):
 
             loss = classification_criterion(logits, target) + hsic_loss
 
-            val_loss += loss.item()
+            tot_loss += loss.item()
 
             _, predicted = torch.max(logits.data, 1)
 
@@ -130,8 +130,8 @@ def valid_or_test(mode, perf_dict=None):
 
     f1_total = f1_score(labels, preds, labels=[0, 1], average=None)
 
-    val_loss /= len(val_loader.dataset)
-    epoch_accuracy = 100 * float(correct) / val_loader.dataset.__len__()
+    tot_loss /= len(loader.dataset)
+    epoch_accuracy = 100 * float(correct) / loader.dataset.__len__()
 
     perf_dict['accuracy'].append(epoch_accuracy)
     perf_dict['f1']['naf'].append(f1_total[0])
@@ -141,7 +141,7 @@ def valid_or_test(mode, perf_dict=None):
         torch.save(model.state_dict(), os.path.join(file_dir, f'{exp_name}_params.pkl'))
         print(['Saved @  ' + str(epoch_accuracy) + '%'])
 
-    print(f'====> {mode} set loss: {val_loss:.5f}')
+    print(f'====> {mode} set loss: {tot_loss:.5f}')
     print(f'{mode} accuracy: {epoch_accuracy:.4f}')
     print(f'{mode} F1: {f1_total[0]}, {f1_total[1]}')
 
