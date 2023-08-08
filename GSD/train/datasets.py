@@ -22,24 +22,25 @@ DATA_PATH = '/media/roironen/8AAE21F5AE21DB09/Data/GSD'
 
 class GSDDataset(Dataset):
 
-    def __init__(self, experiments, plates, dict_features, feature_opt=None, oversample=False,
-                 idxs=None):
+    def __init__(self, experiments, plates, dict_features, oversample=False,
+                 idxs=None, n_fields=-1):
 
         self.feature_subset = dict_features['feature_subset']
         self.feature_opt = dict_features['feature_opt']
         self.engineered_features = dict_features['engineered_features']
         self.learned_features = dict_features['learned_features']
-        assert (self.learned_features  or self.engineered_features )
+        assert (self.learned_features or self.engineered_features )
 
         self.data_dir = os.path.join(DATA_PATH)
         self.dataset_path = os.path.join(self.data_dir)
         self.idxs = idxs
+        self.n_fields = n_fields
         self.eng_features_names = ['Local Outlier Factor 10', 'Local Outlier Factor 8',	'Local Outlier Factor 30', 'calc_area1',
                                    'calc_area2', 'calc_area3', 'calc_area4', 'calc_text1', 'calc_intensity',
                                    'nuc_area1',	'nuc_area2', 'nuc_area3', 'nuc_area4', 'nuc_text1', 'nuc_intensity',
                                    'lyso_area2', 'lyso_area1', 'lyso_area3', 'lyso_text2', 'lyso_text1',
                                    'lyso_intensity1', 'tmre_area2', 'tmre_area1', 'tmre_area3', 'tmre_intensity1',
-                                   'tmre_text1', 'tmre_text2']
+                                   'tmre_text1', 'tmre_text2', 'PC']
         # These options are called only from plot_utils.py, so need to go 1 folder up
         # if (oversample == 'af') or (oversample == 'normal'):
             # assert 0  # need to check if this still works..
@@ -104,7 +105,7 @@ class GSDDataset(Dataset):
                # and self.dataset_size == self.eng_features_val.shape[0]
 
 
-    def get_field_images(self, index):
+    def get_field_images(self, index, n_fields=-1):
         # name = self.image_name[index][len(self.labels[self.classes[index]]):]
         # row = name.split('r')[-1].split('c')[0]
         # row = row if len(row) > 1 else '0' + row
@@ -140,6 +141,12 @@ class GSDDataset(Dataset):
                 NotImplementedError()
 
             field_images = []
+            fields_ind = np.array(fields_ind)
+            if n_fields>0:
+                if n_fields == 1:
+                    fields_ind = np.array([1])
+                else:
+                    fields_ind = fields_ind[np.random.permutation(len(fields_ind))[:n_fields]]
 
 
             for f in fields_ind:
@@ -165,8 +172,8 @@ class GSDDataset(Dataset):
             eng_features = eng_features.reshape(1, eng_features.shape[0]).astype('float32')
         else:
             eng_features = np.empty(1)
-        if self.feature_opt == 'all':
-            field_images = self.get_field_images(index)
+        if self.learned_features:
+            field_images = self.get_field_images(index, self.n_fields)
         else:
             field_images = np.empty(1)
         assert not (field_images is None and eng_features is None)
@@ -213,8 +220,26 @@ class GSDDataset(Dataset):
 
     def load_features(self):
         self.eng_features_val = self.df[self.eng_features_names].to_numpy()
+        self.eng_features_val[np.isnan(self.eng_features_val[:,-1]),-1] = 0
+        self.mean_for_norm = np.array([-1.07798411e+00, -1.07675858e+00, -1.21970323e+00,  1.21305860e-01,
+        3.75575958e-01,  3.26835350e-01,  1.61146903e+02,  8.28363428e-03,
+        1.77832103e+03,  2.91747058e-02,  3.88422369e-01,  2.10256820e+02,
+        1.20350789e+01,  3.19530540e-02,  4.94654329e+02,  8.16612634e-01,
+        5.66387227e-01,  8.05003460e-01,  5.52642023e-02,  1.30330342e-01,
+        1.33632186e+02,  6.36978350e-01,  4.95743669e+02,  1.26500090e+00,
+        2.47449187e+02,  1.22805711e-01,  5.43184532e-01,  3.34800000e+01])
+        self.std_for_norm = np.array([1.18863474e-01, 1.24678562e-01, 2.86859147e-01, 1.89266924e-02,
+       3.81899547e-02, 4.68286225e-02, 1.19508902e+01, 1.18279037e-03,
+       9.05242515e+02, 4.96425347e-03, 1.17966054e-02, 2.00123168e+01,
+       5.85224136e-01, 3.12259686e-03, 2.09307396e+02, 8.78698979e-03,
+       1.11105048e-01, 1.65557129e-02, 3.63911419e-03, 1.83190514e-02,
+       1.00960156e+02, 2.27898624e-01, 2.87568723e+02, 1.29414843e-01,
+       1.11387760e+02, 2.53863163e-02, 1.53293720e-01, 2.97733035e+01])
+
+        self.eng_features_val -= self.mean_for_norm
+        self.eng_features_val /= self.std_for_norm
         self.feature_len = self.eng_features_val.shape[1]
-        assert (self.feature_len) == 27
+        assert (self.feature_len) == 28
         # self.image_name = self.df['group_roi'].to_numpy()
 
         # if ('HSIC' in self.feature_opt.lower()) or ('concat' in self.feature_opt.lower()):
@@ -264,14 +289,14 @@ class GSDDataset(Dataset):
     #     return
 
 
-def create_dataloaders(batch_size, dict_features):
+def create_dataloaders(batch_size, dict_features, n_fields=-1):
     train_exp = val_exp =[1,2,3,4]
     n_train_plates = 6 * len(val_exp)
     train_val_plates = np.random.permutation(n_train_plates)+1
     train_val_plate_exp = np.array(train_exp).take(np.floor(train_val_plates/7).astype(int))
     train_val_plates = np.mod(train_val_plates-1,6)+1
 
-    N = np.ceil(n_train_plates*0.95).astype(int)
+    N = np.ceil(n_train_plates*0.8).astype(int)
     train_plate = train_val_plates[:N]
     val_plate = train_val_plates[N:]
 
@@ -281,18 +306,18 @@ def create_dataloaders(batch_size, dict_features):
     test_exp = np.array([5]*6)
     test_plate = np.arange(1,7)
     train_dataset = GSDDataset(experiments=train_plate_exp, plates=train_plate,dict_features=dict_features,
-                               oversample=False,)
+                               oversample=False, n_fields=n_fields)
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False,
                                                sampler=train_dataset.sampler, num_workers=4)
 
     val_dataset = GSDDataset(experiments=val_plate_exp, plates=val_plate, dict_features=dict_features,
-                             oversample=False,)
-    val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=batch_size, shuffle=False,
+                             oversample=False, n_fields=-1)
+    val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1, shuffle=False,
                                              sampler=val_dataset.sampler, num_workers=4)
 
     test_dataset = GSDDataset(experiments=test_exp, plates=test_plate, dict_features=dict_features,
-                              oversample=False,)
-    test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False,
+                              oversample=False, n_fields=-1)
+    test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=1, shuffle=False,
                                               sampler=test_dataset.sampler)
 
     return train_loader, val_loader, test_loader

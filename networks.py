@@ -52,8 +52,10 @@ class HSICClassifier(nn.Module):
         self.feature_len = feature_len
         self.gap_norm_opt = gap_norm_opt
         if dict_features['learned_features']:
-            self.model = models.resnet18(weights=models.resnet.ResNet18_Weights.IMAGENET1K_V1)
-
+            self.model = models.resnet18(weights=models.resnet.ResNet18_Weights.IMAGENET1K_V1,)
+            # for name, module in self.model._modules.items():
+            #     if 'bn' in name:
+            #         self.model._modules[name] = nn.LayerNorm(self.model._modules[name].weight.shape)
             conv1_old = self.model.conv1
             conv1_new = nn.Conv2d(4,conv1_old.out_channels,
                                   kernel_size=conv1_old.kernel_size,stride=conv1_old.stride,
@@ -132,24 +134,29 @@ class HSICClassifier(nn.Module):
 
         self.gradients = None
 
-    def forward(self, x, features=None):
+    def forward(self, x, features=None, get_cam=False):
         # skips = list()
         if self.model is not None:
-            output = self.model(x)
-            gap = torch.mean(output, dim=0)[None]
+            b,n = x.shape[:2]
+            x = x.view(-1,*x.shape[2:]) #(B,N_field,c,w,h) -> (B*N_field,c,w,h)
+            output = self.model(x).reshape(b,n,-1) #(B*N_field,d) -> (B,N_field,d)
+            output = torch.mean(output, dim=1)
+            # gap = torch.mean(output, dim=1)
+            gap = output
 
-            # if self.gap_norm_opt == 'batch_norm':
+            # if self.gap_norm_opt == 'batch_norm' and gap.shape[0]>1:
             #     gap = self.batch_norm(gap)
 
             if ('concat' in self.feature_opt.lower()) and (self.feature_len > 0):
-                gap = torch.cat([gap, features], dim=1)
+                gap = torch.cat([gap, features], dim=-1)
 
             logits = self.fc_layer(gap)
-            weight_fc = list(self.fc_layer.parameters())[0][:, :output.shape[1]]
+
+            weight_fc = list(self.fc_layer.parameters())[0][:, :output.shape[-1]]
             weight_fc_tile = weight_fc.repeat(output.shape[0], 1, 1)
 
-            cam = torch.bmm(weight_fc_tile, output.unsqueeze(2))
-            gap=gap[:, :self.activation_size]
+            cam = torch.bmm(weight_fc_tile, output.unsqueeze(2)) if get_cam else None
+            gap = gap[:, :self.activation_size]
         else:
             logits = self.fc_layer(features)
             cam=None
