@@ -22,8 +22,8 @@ DATA_PATH = '/media/roironen/8AAE21F5AE21DB09/Data/GSD'
 
 class GSDDataset(Dataset):
 
-    def __init__(self, experiments, plates, dict_features, oversample=False,
-                 idxs=None, n_fields=-1):
+    def __init__(self, dict_features, split=None, experiments=None, plates=None, oversample=False,
+                 idxs=None, n_fields=-1, num_classes=2):
 
         self.feature_subset = dict_features['feature_subset']
         self.feature_opt = dict_features['feature_opt']
@@ -35,6 +35,7 @@ class GSDDataset(Dataset):
         self.dataset_path = os.path.join(self.data_dir)
         self.idxs = idxs
         self.n_fields = n_fields
+        self.num_classes = num_classes
         self.eng_features_names = ['Local Outlier Factor 10', 'Local Outlier Factor 8',	'Local Outlier Factor 30', 'calc_area1',
                                    'calc_area2', 'calc_area3', 'calc_area4', 'calc_text1', 'calc_intensity',
                                    'nuc_area1',	'nuc_area2', 'nuc_area3', 'nuc_area4', 'nuc_text1', 'nuc_intensity',
@@ -47,31 +48,54 @@ class GSDDataset(Dataset):
             # main_dir = os.path.abspath(os.path.join(os.getcwd(), os.pardir))
             # dataset_path = os.path.join(main_dir, self.dataset_path)
             # data_dir = os.path.join(main_dir, data_dir)
-        self.df = pd.read_csv(os.path.join(self.data_dir, 'df_clean_final_roi_proj.csv'))
-
-        group_roi = self.df['group_roi'].to_list()
-        row = []
-        col = []
-        pla = []
-        exp = []
-        mask_df = []
-        for group in group_roi:
-            p = (int(group.split('p')[-1]))
-            e = int(np.floor((p-1) / 6)) + 1
-            exp.append(e)
-            plate_new = p - 6 * (e - 1)
-            pla.append(plate_new)
-            row.append(int(group.split('r')[-1].split('c')[0]))
-            col.append(int(group.split('c')[-1].split('p')[0]))
-            mask_df.append(np.any((e == experiments) * (plate_new == plates)))
-            # new_col.append(c.split('NONE')[-1].split('p')[0]+f'p{plate_new}e{e}')
-
-        self.df['experiment'] = exp
-        self.df['plate_num'] = pla
-        self.df['plate_row'] = row
-        self.df['plate_col'] = col
-
-        self.df = self.df.loc[mask_df]
+        df_list = []
+        for disorder in dict_features['disorders']:
+            df = pd.read_csv(glob.glob(os.path.join(self.data_dir,disorder, '*.csv'))[0])
+        # self.df = pd.concat(df)
+            group_roi = df['group_roi'].to_list()
+            row = []
+            col = []
+            pla = []
+            exp = []
+            mask_df = []
+            for group in group_roi:
+                p = (int(group.split('p')[-1]))
+                e = int(np.floor((p-1) / 6)) + 1
+                exp.append(e)
+                plate_new = p - 6 * (e - 1)
+                pla.append(plate_new)
+                row.append(int(group.split('r')[-1].split('c')[0]))
+                col.append(int(group.split('c')[-1].split('p')[0]))
+                if split is None and experiments is not None and  plates is not None:
+                    mask_df.append(np.any((e == experiments[disorder]) * (plate_new == plates[disorder])))
+                # new_col.append(c.split('NONE')[-1].split('p')[0]+f'p{plate_new}e{e}')
+            df['experiment'] = exp
+            df['plate_num'] = pla
+            df['plate_row'] = row
+            df['plate_col'] = col
+            df['disorder'] = disorder
+            if split is not None:
+                with open(os.path.join(self.data_dir,disorder, disorder + '_split.pkl'), 'rb') as fp:
+                    mask_experiments = pkl.load(fp)[split]
+                mask_df = np.zeros(len(exp),dtype=bool)
+                for i_exp, mask in enumerate(mask_experiments):
+                    m = mask_df[(i_exp+1)==np.array(exp)]
+                    m[mask] = True
+                    mask_df[(i_exp + 1) == np.array(exp)] = m
+            df_list.append(df.loc[mask_df])
+        # train = []
+        # val = []
+        # test = []
+        # for i in range(1, 6):
+        #     cells = (np.array(exp) == i).sum()
+        #     index = np.random.permutation(cells)
+        #     N = np.ceil(cells * 0.8).astype(int)
+        #     N2 = np.ceil(cells * 0.9).astype(int)
+        #
+        #     train.append(index[:N])
+        #     val.append(index[N:N2])
+        #     test.append(index[N2:])
+        self.df = pd.concat(df_list)
         self.df = self.df.reset_index()
         self.load_labels()
 
@@ -120,11 +144,14 @@ class GSDDataset(Dataset):
             row = row if len(row) > 1 else '0' + row
             col = self.df['plate_col'][index].astype(str)
             col = col if len(col) > 1 else '0' + col
+            disorder = self.df['disorder'][index]
             file_name = f'r{row}c{col}f*p01-ch{1}*'
-            max_n_fields = len(glob.glob(os.path.join(self.dataset_path, f'exp{exp}', f'e{exp}p{plate}', 'Images', file_name)))
+            max_n_fields = len(glob.glob(os.path.join(self.dataset_path, disorder, f'exp{exp}', f'e{exp}p{plate}', 'Images', file_name)))
 
             if max_n_fields == 16:
                 fields_ind = ['02', '03', '04', '05', '08', '07', '01', '06', '09', '10', '11', '12', '16', '15', '14','13']
+            elif max_n_fields == 20:
+                fields_ind = ['09', '08', '07', '06', '10', '11', '01', '12', '18', '17', '16', '15']
             elif max_n_fields == 23:
                 fields_ind = ['09', '08', '07', '06', '10', '11', '01', '12', '18', '17', '16', '15', '19', '20', '21', '22']
             elif max_n_fields == 26:
@@ -133,6 +160,8 @@ class GSDDataset(Dataset):
                 fields_ind = ['10', '11', '12', '13', '18', '17', '01', '16', '19', '20', '21', '22', '28', '27', '26', '25']
             elif max_n_fields == 32:
                 fields_ind = ['09', '10', '11', '12', '17', '16', '01', '15', '18', '19', '20', '21', '27', '26', '25', '24']
+            elif max_n_fields == 33:
+                fields_ind = ['09', '08', '07', '06', '12', '13', '01', '14', '20', '19', '18', '17', '23', '24', '25', '26']
             elif max_n_fields == 38 or max_n_fields == 37:
                 fields_ind = ['11', '12', '13', '14', '19', '18', '01', '17', '22', '23', '24', '25', '31', '30', '29', '28']
             elif max_n_fields == 42:
@@ -155,7 +184,7 @@ class GSDDataset(Dataset):
                 for c in range(1, 5):
 
                     file_name = f'r{row}c{col}f{f}*p01-ch{c}*'
-                    channel_images = glob.glob(os.path.join(self.dataset_path,f'exp{exp}',f'e{exp}p{plate}*','Images', file_name))[-1]
+                    channel_images = glob.glob(os.path.join(self.dataset_path, disorder, f'exp{exp}',f'e{exp}p{plate}*','Images', file_name))[-1]
 
                     # for channel_image_path in channel_images:
                     ampl = int(channel_images.split('max_val')[-1].split('.jpeg')[0])
@@ -163,19 +192,22 @@ class GSDDataset(Dataset):
                 field_images.append(np.stack(channel_image))
             field_images = np.stack(field_images)#.swapaxes(0, 1)
         except:
-            print()
+            field_images = np.empty(0)
         return field_images
+
     def __getitem__(self, index):
         target = self.classes[index]
+        label = self.labels[index]
         if self.engineered_features:
             eng_features = self.eng_features_val[index, :]
             eng_features = eng_features.reshape(1, eng_features.shape[0]).astype('float32')
         else:
-            eng_features = np.empty(1)
+            eng_features = np.empty(0)
         if self.learned_features:
             field_images = self.get_field_images(index, self.n_fields)
         else:
-            field_images = np.empty(1)
+            field_images = np.zeros((1,1,1))
+
         assert not (field_images is None and eng_features is None)
         # feature = np.zeros(1, dtype='float32')
         # feature_rep = np.zeros(1, dtype='float32')
@@ -187,23 +219,25 @@ class GSDDataset(Dataset):
         #     feature = self.features.loc[signal_name.split(sep='_')[0]].values.astype('float32')
         #     feature_rep = feature  # relic from a time we used representations learned from another network
 
-        return field_images, target, eng_features
+        return field_images, target, eng_features, label
 
     def __len__(self):
         return self.dataset_size
 
     def label2class(self, labels):
-        self.labels = list(set(labels))
+        self.label_types = list(set(labels))
         classes = np.zeros(len(labels),dtype=int)-1
-        for i in range(len(self.labels)):
-            classes[np.array(self.labels[i])==labels] = i
+        for i in range(len(self.label_types)):
+            classes[np.array(self.label_types[i])==labels] = i
 
         assert np.all(classes>=0)
+        assert self.num_classes == len(self.label_types)
         return classes
 
     def load_labels(self):
         # df = df.reset_index()
-        self.classes = self.label2class(self.df['group'].tolist())
+        self.labels = self.df['group'].tolist()
+        self.classes = self.label2class(self.labels)
 
 
         # # self.labels = pd[.DataFrame.from_dict(data=json_dict, orient='index')]
@@ -236,8 +270,8 @@ class GSDDataset(Dataset):
        1.00960156e+02, 2.27898624e-01, 2.87568723e+02, 1.29414843e-01,
        1.11387760e+02, 2.53863163e-02, 1.53293720e-01, 2.97733035e+01])
 
-        self.eng_features_val -= self.mean_for_norm
-        self.eng_features_val /= self.std_for_norm
+        # self.eng_features_val -= self.mean_for_norm
+        # self.eng_features_val /= self.std_for_norm
         self.feature_len = self.eng_features_val.shape[1]
         assert (self.feature_len) == 28
         # self.image_name = self.df['group_roi'].to_numpy()
@@ -257,18 +291,18 @@ class GSDDataset(Dataset):
             # if self.is_baseline:
             #     self.feature_len = 0
 
-    def balance_classes(self):
-        total = len(self.labels)
-        self.labels['weights'] = 1
-
-        counts = self.labels.target.value_counts()
-        for i in range(2):
-            total2 = counts[0] + counts[1]
-            self.labels.loc[self.labels.target == i, 'weights'] = total2 / counts[i]
-        self.labels.loc[self.labels.target == 2, 'weights'] = 0.0001  # just a small probability
-        sampler = WeightedRandomSampler(weights=torch.DoubleTensor(self.labels.weights), replacement=True,
-                                        num_samples=total)
-        return sampler
+    # def balance_classes(self):
+    #     total = len(self.label_types)
+    #     self.labels['weights'] = 1
+    #
+    #     counts = self.labels.target.value_counts()
+    #     for i in range(2):
+    #         total2 = counts[0] + counts[1]
+    #         self.labels.loc[self.labels.target == i, 'weights'] = total2 / counts[i]
+    #     self.labels.loc[self.labels.target == 2, 'weights'] = 0.0001  # just a small probability
+    #     sampler = WeightedRandomSampler(weights=torch.DoubleTensor(self.labels.weights), replacement=True,
+    #                                     num_samples=total)
+    #     return sampler
 
     # def generate_all_rrs(self):
     #     max_len = 0
@@ -287,69 +321,122 @@ class GSDDataset(Dataset):
     #     rr_df = pd.DataFrame.from_dict(rr_dict, orient='index')
     #     rr_df.to_csv(os.path.join(os.getcwd(), 'rr.csv'))
     #     return
+# def split_data(different_experiments):
+    # if different_experiments:
+    #     train_exp = val_exp =[1,2,3]
+    #     n_train_plates = 6 * len(val_exp)
+    #     train_val_plates = np.random.permutation(n_train_plates)+1
+    #     train_val_plate_exp = np.array(train_exp).take(np.floor(train_val_plates/7).astype(int))
+    #     train_val_plates = np.mod(train_val_plates-1,6)+1
+    #
+    #     N = np.ceil(n_train_plates*0.8).astype(int)
+    #     train_plate = train_val_plates[:N]
+    #     val_plate = train_val_plates[N:]
+    #
+    #     train_exp = train_val_plate_exp[:N]
+    #     val_exp = train_val_plate_exp[N:]
+    #
+    #     test_exp = np.array([4]*6)
+    #     test_plate = np.arange(1,7)
+    #
+    #     train_exp={'GSD1A':train_exp, 'APBD':train_exp}
+    #     train_plate={'GSD1A':train_plate, 'APBD':train_plate}
+    #     val_exp={'GSD1A':val_exp, 'APBD':val_exp}
+    #     val_plate={'GSD1A':val_plate, 'APBD':val_plate}
+    #     test_exp={'GSD1A':test_exp, 'APBD':test_exp}
+    #     test_plate={'GSD1A':test_plate, 'APBD':test_plate}
+    # else:
+    #
+    # return train_exp, train_plate, val_exp, val_plate, test_exp, test_plate
+def create_dataloaders(batch_size, dict_features, n_fields=-1, num_classes=2):
 
 
-def create_dataloaders(batch_size, dict_features, n_fields=-1):
-    train_exp = val_exp =[1,2,3,4]
+    train_dataset = GSDDataset(dict_features=dict_features, split='train',
+                               oversample=False, n_fields=n_fields, num_classes=num_classes)
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True,
+                                               sampler=train_dataset.sampler, num_workers=4)
+
+    val_dataset = GSDDataset(dict_features=dict_features,split='val',
+                             oversample=False, n_fields=n_fields, num_classes=num_classes)
+    val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1, shuffle=False,
+                                             sampler=val_dataset.sampler, num_workers=4)
+
+    test_dataset = GSDDataset( dict_features=dict_features,split='test',
+                              oversample=False, n_fields=n_fields, num_classes=num_classes)
+    test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=1, shuffle=False,
+                                              sampler=test_dataset.sampler)
+
+    return train_loader, val_loader, test_loader
+
+def create_dataloaders_old(batch_size, dict_features, n_fields=-1, num_classes=2):
+    train_exp = val_exp = [1, 2, 3,4,5]
     n_train_plates = 6 * len(val_exp)
-    train_val_plates = np.random.permutation(n_train_plates)+1
-    train_val_plate_exp = np.array(train_exp).take(np.floor(train_val_plates/7).astype(int))
-    train_val_plates = np.mod(train_val_plates-1,6)+1
+    train_val_plates = np.random.permutation(n_train_plates) + 1
+    train_val_plate_exp = np.array(train_exp).take(np.floor(train_val_plates / 7).astype(int))
+    train_val_plates = np.mod(train_val_plates - 1, 6) + 1
 
-    N = np.ceil(n_train_plates*0.8).astype(int)
+    N = np.ceil(n_train_plates * 1.0).astype(int)
     train_plate = train_val_plates[:N]
     val_plate = train_val_plates[N:]
 
-    train_plate_exp = train_val_plate_exp[:N]
-    val_plate_exp = train_val_plate_exp[N:]
+    train_exp = train_val_plate_exp[:N]
+    val_exp = train_val_plate_exp[N:]
 
-    test_exp = np.array([5]*6)
-    test_plate = np.arange(1,7)
-    train_dataset = GSDDataset(experiments=train_plate_exp, plates=train_plate,dict_features=dict_features,
-                               oversample=False, n_fields=n_fields)
-    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False,
+    test_exp = np.array([4] * 6)
+    test_plate = np.arange(1, 7)
+
+    train_exp = {'GSD1A': train_exp, 'APBD': train_exp}
+    train_plate = {'GSD1A': train_plate, 'APBD': train_plate}
+    val_exp = {'GSD1A': val_exp, 'APBD': val_exp}
+    val_plate = {'GSD1A': val_plate, 'APBD': val_plate}
+    test_exp = {'GSD1A': test_exp, 'APBD': test_exp}
+    test_plate = {'GSD1A': test_plate, 'APBD': test_plate}
+
+    train_dataset = GSDDataset(experiments=train_exp, plates=train_plate,dict_features=dict_features,
+                               oversample=False, n_fields=n_fields, num_classes=num_classes)
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True,
                                                sampler=train_dataset.sampler, num_workers=4)
 
-    val_dataset = GSDDataset(experiments=val_plate_exp, plates=val_plate, dict_features=dict_features,
-                             oversample=False, n_fields=-1)
+    val_dataset = GSDDataset(experiments=val_exp, plates=val_plate, dict_features=dict_features,
+                             oversample=False, n_fields=n_fields, num_classes=num_classes)
     val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1, shuffle=False,
                                              sampler=val_dataset.sampler, num_workers=4)
 
     test_dataset = GSDDataset(experiments=test_exp, plates=test_plate, dict_features=dict_features,
-                              oversample=False, n_fields=-1)
+                              oversample=False, n_fields=n_fields, num_classes=num_classes)
     test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=1, shuffle=False,
                                               sampler=test_dataset.sampler)
 
     return train_loader, val_loader, test_loader
 
 
-def create_kfoldcv_loaders(batch_size, feature_subset, feature_opt, naf):
-    num_folds = 5
-    kfoldcv_testloaders = []
-    test_dataset = GSDDataset("test", feature_subset=feature_subset, feature_opt=feature_opt,
-                              oversample=False,)
-
-    np.random.seed(24)
-    idxs = (np.random.multinomial(1, 0.2 * np.ones(5).ravel(), size=len(test_dataset)) == 1).argmax(1).astype(int)
-
-    for i_fold in range(num_folds):
-        idx_test = idxs == i_fold
-        idx_val = idxs == (i_fold + 1) % 5
-        idx_train = ((idxs == (i_fold + 2) % 5) |
-                     (idxs == (i_fold + 3) % 5) |
-                     (idxs == (i_fold + 4) % 5))
-
-        train_dataset = GSDDataset("test", feature_subset=feature_subset, feature_opt=feature_opt,
-                                   oversample=False, idxs=idx_train)
-        train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False,
-                                                   sampler=train_dataset.sampler)
-        val_dataset = GSDDataset("test", feature_subset=feature_subset, feature_opt=feature_opt,
-                                 oversample=False, idxs=idx_val)
-        val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=batch_size, shuffle=False,
-                                                 sampler=val_dataset.sampler)
-        test_dataset = GSDDataset("test", feature_subset=feature_subset, feature_opt=feature_opt,
-                                  oversample=False, idxs=idx_test)
-        test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False,
-                                                  sampler=test_dataset.sampler)
-        kfoldcv_testloaders.append((train_loader, val_loader, test_loader))
-    return kfoldcv_testloaders
+# def create_kfoldcv_loaders(batch_size, feature_subset, feature_opt, naf):
+#     num_folds = 5
+#     kfoldcv_testloaders = []
+#     test_dataset = GSDDataset("test", feature_subset=feature_subset, feature_opt=feature_opt,
+#                               oversample=False,)
+#
+#     np.random.seed(24)
+#     idxs = (np.random.multinomial(1, 0.2 * np.ones(5).ravel(), size=len(test_dataset)) == 1).argmax(1).astype(int)
+#
+#     for i_fold in range(num_folds):
+#         idx_test = idxs == i_fold
+#         idx_val = idxs == (i_fold + 1) % 5
+#         idx_train = ((idxs == (i_fold + 2) % 5) |
+#                      (idxs == (i_fold + 3) % 5) |
+#                      (idxs == (i_fold + 4) % 5))
+#
+#         train_dataset = GSDDataset("test", feature_subset=feature_subset, feature_opt=feature_opt,
+#                                    oversample=False, idxs=idx_train)
+#         train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False,
+#                                                    sampler=train_dataset.sampler)
+#         val_dataset = GSDDataset("test", feature_subset=feature_subset, feature_opt=feature_opt,
+#                                  oversample=False, idxs=idx_val)
+#         val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=batch_size, shuffle=False,
+#                                                  sampler=val_dataset.sampler)
+#         test_dataset = GSDDataset("test", feature_subset=feature_subset, feature_opt=feature_opt,
+#                                   oversample=False, idxs=idx_test)
+#         test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False,
+#                                                   sampler=test_dataset.sampler)
+#         kfoldcv_testloaders.append((train_loader, val_loader, test_loader))
+#     return kfoldcv_testloaders

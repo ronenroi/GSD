@@ -67,7 +67,8 @@ class HSICClassifier(nn.Module):
                 conv1_new.weight = nn.Parameter(new_weights)
                 self.model.conv1 = conv1_new
             self.activation_size = self.model.fc.in_features
-            self.model.fc = nn.Identity()
+            self.model.fc = nn.Linear(in_features=self.model.fc.in_features, out_features=self.model.fc.in_features, bias=True)
+            # nn.Identity()
         # self.model = torch.nn.Sequential(*(list(self.model.children())[:-1]))
 
         # padding = kernel_size//2
@@ -128,7 +129,9 @@ class HSICClassifier(nn.Module):
         ext_rep_size = self.feature_len
         fc_layer_in_size = self.activation_size + ext_rep_size*int('concat' in self.feature_opt.lower())
         # self.fc_layer = nn.Linear(in_features=fc_layer_in_size, out_features=self.num_classes, bias=False)
-        self.fc_layer = nn.Linear(in_features=fc_layer_in_size, out_features=self.num_classes, bias=True)
+        self.fc_layer = nn.Linear(in_features=fc_layer_in_size, out_features=32, bias=True)
+        # self.fc_layer = MLP2Layer(in_size=fc_layer_in_size, hidden_size1=64, hidden_size2=64, out_size=self.num_classes)
+
 
         self.relu = nn.ReLU(inplace=True)
 
