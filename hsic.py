@@ -21,15 +21,16 @@ def kernelMatrixLinear(x):
 def HSIC(X, Y, kernelX="Gaussian", kernelY="Gaussian", sigmaX=1., sigmaY=1., device="cpu"):
 
     m, _ = X.shape
+    l, _ = Y.shape
 
     K = kernelMatrixGaussian(X, sigmaX) if kernelX == "Gaussian" else kernelMatrixLinear(X)
     L = kernelMatrixGaussian(Y, sigmaY) if kernelY == "Gaussian" else kernelMatrixLinear(Y)
 
-    H = (torch.eye(m) - 1.0/m * torch.ones((m, m))).to(device)
+    H = (torch.eye(m,l) - 1.0/(m*l)**0.5 * torch.ones((m, l))).to(device)
 
-    Kc = torch.mm(H, torch.mm(K, H))
+    Kc = torch.mm(H.T, torch.mm(K, H))
 
-    HSIC = torch.trace(torch.mm(L, Kc)) / (m ** 2)  # it's supposed to be divided by m-1 but it's not robust
+    HSIC = torch.trace(torch.mm(L, Kc)) / (m * l)  # it's supposed to be divided by m-1 but it's not robust
     # to cases of batch size of 1 so I changed to m. Shouldn't make a difference..
     return HSIC
 
@@ -47,12 +48,13 @@ class HSICLoss:
     def calc_loss(self, gap, feature):
         loss = torch.zeros(1,device=self.device)
         if self.flag_calc_loss:
+            gap = gap.reshape(-1,gap.shape[-1])
             # calculate median distance between all pairs of points
             med_dist = np.median(pdist(gap.detach().cpu().numpy(), metric='euclidean').reshape(-1, 1))
             # calculate current kernel bandwidth as moving average of previous sigma and current median distance
             sigma_gap = np.maximum(self.decay_factor * self.sigma_gap +
                                    (1-self.decay_factor) * med_dist, 0.005)
-            gap = gap[:, :self.activation_size]  # penalize only the latent representation, not the external features
+            # gap = gap[:, :self.activation_size]  # penalize only the latent representation, not the external features
             hsic_features = HSIC(gap, feature, kernelX='Gaussian', kernelY='Gaussian',
                                  sigmaX=sigma_gap, sigmaY=self.external_feature_std, device=self.device)
             loss = self.lambda_hsic * hsic_features

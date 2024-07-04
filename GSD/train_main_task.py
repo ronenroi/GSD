@@ -1,4 +1,6 @@
 import os
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pickle as pkl
 import torch
@@ -13,21 +15,25 @@ from GSD.train.datasets import create_dataloaders
 from GSD.train.train_utils import get_device, AnnealingRestartScheduler
 
 # experiment parameters
-lambda_hsic = 0
-feature_opt = 'Concat'  # {'None', 'Concat', 'HSIC', 'HSIC+Concat'}
+lambda_hsic = 0.5
+feature_opt = 'HSIC+Concat'  # {'None', 'Concat', 'HSIC', 'HSIC+Concat'}
 engineered_features = True
 learned_features = True
 feature_subset = 'ALL'
-exp_name = f"eng_feat{engineered_features}_learned_feat{learned_features}_lambda{lambda_hsic}_{feature_subset}"
+use_comp = False
+n_training_fields = 8
+grad_accumulation_steps = 1
+classifier='linear'
+disorders = ['GSD1A']#['APBD']#['GSD1A']
+
+exp_name = f"{''.join(disorders)}_eng_{engineered_features}_learned_{learned_features}_classifier_{classifier}_lambda{lambda_hsic}{'_'+str(n_training_fields) if learned_features else ''}"
 print(exp_name)
-n_training_fields = 1
 # training parameters
 update_lambda = True
 lr = 1e-4
 num_epochs = 100
 batch_size = 1 # int(16/n_training_fields)
 cuda_id = 0
-disorders = ['GSD1A']#['APBD']#['GSD1A']
 
 num_classes = len(disorders) + 1
 assert num_classes>1
@@ -36,7 +42,9 @@ dict_features = {'feature_opt':feature_opt,
                  'feature_subset':feature_subset,
                  'engineered_features':engineered_features,
                  'learned_features':learned_features,
-                 'disorders': disorders}
+                 'disorders': disorders,
+                 'use_comp': use_comp,
+                 'classifier': classifier}
 
 file_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'saved_models', exp_name)
 if not os.path.exists(file_dir):
@@ -48,8 +56,27 @@ train_loader, val_loader, test_loader = create_dataloaders(batch_size, dict_feat
 
 model = HSICClassifier(num_classes=num_classes, feature_len=train_loader.dataset.feature_len,
                        dict_features=dict_features, gap_norm_opt='batch_norm').to(device)
-
+# no_decay = list()
+# decay = list()
+# all = list()
+# for m in model.model.features.modules():
+#       if isinstance(m, (nn.Conv2d)):
+#         decay.append(m.weight)
+#         if m.bias is not None:
+#             no_decay.append(m.bias)
+#       elif hasattr(m, 'weight'):
+#         no_decay.append(m.weight)
+#       elif hasattr(m, 'bias'):
+#         no_decay.append(m.bias)
+#       else:
+#           all.append(m)
+#
+# no_decay.append(model.fc_layer.weight)
+# no_decay.append( model.model.classifier.weight)
+# no_decay.append( model.model.classifier.bias)
 optimizer = optim.Adam(model.parameters(), lr=lr, betas=(0.95, 0.99), eps=1e-08, weight_decay=0, amsgrad=False)
+# optimizer = optim.AdamW([{'params': no_decay, 'weight_decay': 0}, {'params': decay, 'weight_decay': 0}], lr=lr)
+# optimizer = optim.AdamW(, lr=lr, betas=(0.95, 0.99), eps=1e-08, weight_decay=5)
 classification_criterion = nn.CrossEntropyLoss()
 independence_criterion = HSICLoss(feature_opt, lambda_hsic, model.activation_size, device, decay_factor=0.7,
                                   external_feature_std=3)
@@ -66,6 +93,9 @@ def train(epoch, lambda_hsic):
     correct = 0
     false_negative = 0
     all_GSD_patients = 0
+
+    dataset_eng_features = torch.tensor(train_loader.dataset.eng_features_val, device=device, dtype=torch.float)
+
     for batch_idx, (data, target, eng_features, label) in enumerate(tqdm(train_loader)):
         if len(data.shape)==2:
             continue
@@ -73,23 +103,36 @@ def train(epoch, lambda_hsic):
             data, target, eng_features = data.to(device), target.to(device), eng_features.squeeze(1).to(device)
         else:
             target, eng_features = target.to(device), eng_features.squeeze(1).to(device)
-        optimizer.zero_grad()
+
+        # optimizer.zero_grad()
         # for g in optimizer.param_groups:
         #     g['lr'] = lr_scheduler.lr
         try:
             logits, _, gap = model(data, eng_features)
 
             classification_loss = classification_criterion(logits, target)
-            hsic_loss = independence_criterion.calc_loss(gap, eng_features)
+            # hsic_loss = independence_criterion.calc_loss(gap, eng_features)
+            hsic_loss = independence_criterion.calc_loss(gap, dataset_eng_features)
 
             loss = classification_loss + hsic_loss
+            train_loss += loss.item()
 
+            # Normalize the Gradients
+
+            loss = loss / grad_accumulation_steps
             loss.backward()
+
+            if ((batch_idx + 1) % grad_accumulation_steps == 0) or (batch_idx + 1 == len(train_loader)):
+                # Update Optimizer
+                optimizer.step()
+
+                optimizer.zero_grad()
+
+                # loss.backward()
         except:
             print()
         cum_classification_loss += classification_loss.item()
         cum_hsic_loss += hsic_loss.item()
-        train_loss += loss.item()
 
         _, predicted = torch.max(logits.data, 1)
 
@@ -105,7 +148,7 @@ def train(epoch, lambda_hsic):
         # else:
         #     correct += (predicted == target).sum()
 
-        optimizer.step()
+        # optimizer.step()
 
         # lr_scheduler.on_batch_end_update()
 
@@ -120,7 +163,8 @@ def train(epoch, lambda_hsic):
           f', classification={cum_classification_loss / len(train_loader.dataset):.4f},'
           f' hsic={cum_hsic_loss / len(train_loader.dataset):.4f}')
 
-    return lambda_hsic
+
+    return lambda_hsic, (train_loss / len(train_loader.dataset))
 
 
 def valid_or_test(mode, perf_dict=None):
@@ -136,12 +180,14 @@ def valid_or_test(mode, perf_dict=None):
     with torch.no_grad():
         loader = val_loader if mode=='valid' else test_loader
         for batch_idx, (data, target, eng_features, label) in enumerate(tqdm(loader)):
-            if learned_features:
-                data, target, eng_features = data.to(device), target.to(device), eng_features.squeeze(1).to(device)
-            else:
-                target, eng_features = target.to(device), eng_features.squeeze(0).to(device)
-            logits, _, gap = model(data, eng_features)
-
+            try:
+                if learned_features:
+                    data, target, eng_features = data.to(device), target.to(device), eng_features.squeeze(1).to(device)
+                else:
+                    target, eng_features = target.to(device), eng_features.squeeze(1).to(device)
+                logits, _, gap = model(data, eng_features)
+            except:
+                print()
             hsic_loss = independence_criterion.calc_loss(gap, eng_features)
 
             loss = classification_criterion(logits, target) + hsic_loss
@@ -193,17 +239,27 @@ def valid_or_test(mode, perf_dict=None):
         with open(os.path.join(file_dir, f'{exp_name}_test_perf.pkl'), 'wb') as handle:
             pkl.dump(perf_dict, handle, protocol=pkl.HIGHEST_PROTOCOL)
 
-    return perf_dict
+    return perf_dict, tot_loss
 
 
 if __name__ == "__main__":
     perf_dict = None
+    train_losses = []
+    val_losses = []
     print(f'Started training main task, {exp_name}')
     for epoch in range(num_epochs):
-        lambda_hsic = train(epoch, lambda_hsic)
-        perf_dict = valid_or_test(mode='valid', perf_dict=perf_dict)
-        # lr_scheduler.on_epoch_end_update(epoch=epoch)
+        lambda_hsic, loss = train(epoch, lambda_hsic)
+        train_losses.append(loss)
+        perf_dict, val_loss = valid_or_test(mode='valid', perf_dict=perf_dict)
+        val_losses.append(val_loss)
+
+        plt.plot(train_losses)
+        plt.plot(val_losses)
+        plt.legend(['train','val'])
+        plt.yscale('log')
+        plt.savefig(os.path.join(file_dir, 'plot.png'))
+        plt.close()
     model.load_state_dict(torch.load(os.path.join(file_dir, f'{exp_name}_params.pkl')))
-    valid_or_test(mode='valid')
+    # valid_or_test(mode='valid')
     valid_or_test(mode='test')
     print(f'{exp_name} finished training')

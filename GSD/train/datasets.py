@@ -29,6 +29,7 @@ class GSDDataset(Dataset):
         self.feature_opt = dict_features['feature_opt']
         self.engineered_features = dict_features['engineered_features']
         self.learned_features = dict_features['learned_features']
+        self.use_comp = dict_features['use_comp']
         assert (self.learned_features or self.engineered_features )
 
         self.data_dir = os.path.join(DATA_PATH)
@@ -50,7 +51,9 @@ class GSDDataset(Dataset):
             # data_dir = os.path.join(main_dir, data_dir)
         df_list = []
         for disorder in dict_features['disorders']:
-            df = pd.read_csv(glob.glob(os.path.join(self.data_dir,disorder, '*.csv'))[0])
+            path = glob.glob(os.path.join(self.data_dir,disorder, '*.csv'))
+            path = [path_comp for path_comp in path if self.use_comp == ('COMP' in path_comp)][0]
+            df = pd.read_csv(path)
         # self.df = pd.concat(df)
             group_roi = df['group_roi'].to_list()
             row = []
@@ -75,7 +78,9 @@ class GSDDataset(Dataset):
             df['plate_col'] = col
             df['disorder'] = disorder
             if split is not None:
-                with open(os.path.join(self.data_dir,disorder, disorder + '_split.pkl'), 'rb') as fp:
+                mask_path = os.path.join(self.data_dir,disorder, disorder + 'comp' + '_split.pkl') if self.use_comp \
+                    else os.path.join(self.data_dir,disorder, disorder + '_split.pkl')
+                with open(mask_path, 'rb') as fp:
                     mask_experiments = pkl.load(fp)[split]
                 mask_df = np.zeros(len(exp),dtype=bool)
                 for i_exp, mask in enumerate(mask_experiments):
@@ -83,18 +88,18 @@ class GSDDataset(Dataset):
                     m[mask] = True
                     mask_df[(i_exp + 1) == np.array(exp)] = m
             df_list.append(df.loc[mask_df])
-        # train = []
-        # val = []
-        # test = []
-        # for i in range(1, 6):
-        #     cells = (np.array(exp) == i).sum()
-        #     index = np.random.permutation(cells)
-        #     N = np.ceil(cells * 0.8).astype(int)
-        #     N2 = np.ceil(cells * 0.9).astype(int)
-        #
-        #     train.append(index[:N])
-        #     val.append(index[N:N2])
-        #     test.append(index[N2:])
+        train = []
+        val = []
+        test = []
+        for i in range(1, 6):
+            cells = (np.array(exp) == i).sum()
+            index = np.random.permutation(cells)
+            N = np.ceil(cells * 0.8).astype(int)
+            N2 = np.ceil(cells * 0.9).astype(int)
+
+            train.append(index[:N])
+            val.append(index[N:N2])
+            test.append(index[N2:])
         self.df = pd.concat(df_list)
         self.df = self.df.reset_index()
         self.load_labels()
