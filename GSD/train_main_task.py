@@ -15,23 +15,37 @@ from GSD.train.datasets import create_dataloaders
 from GSD.train.train_utils import get_device, AnnealingRestartScheduler
 
 # experiment parameters
-lambda_hsic = 0.5
-feature_opt = 'HSIC+Concat'  # {'None', 'Concat', 'HSIC', 'HSIC+Concat'}
-engineered_features = True
-learned_features = True
-feature_subset = 'ALL'
-use_comp = False
-n_training_fields = 8
-grad_accumulation_steps = 1
-classifier='linear'
+if True:
+    lambda_hsic = 0.05
+    feature_opt = 'Concat'  # {'None', 'Concat', 'HSIC', 'HSIC+Concat'}
+    engineered_features = True
+    learned_features = True
+    feature_subset = 'ALL'
+    use_comp = False
+    n_training_fields = 8
+    grad_accumulation_steps = 1
+    classifier='mlp2'
+    network_name='cnn2'
+else:
+    lambda_hsic=0
+    feature_opt='Concat'
+    engineered_features = True
+    learned_features = False
+    feature_subset = 'ALL'
+    use_comp = False
+    n_training_fields = 1
+    grad_accumulation_steps = 1
+    classifier = 'mlp2'
+    network_name = 'cnn'
+
 disorders = ['GSD1A']#['APBD']#['GSD1A']
 
-exp_name = f"{''.join(disorders)}_eng_{engineered_features}_learned_{learned_features}_classifier_{classifier}_lambda{lambda_hsic}{'_'+str(n_training_fields) if learned_features else ''}"
+exp_name = f"{''.join(disorders)}_eng_{engineered_features}_learned_{learned_features}_{feature_opt}_classifier_{classifier}_lambda{lambda_hsic}{'_'+str(n_training_fields) if learned_features else ''}"
 print(exp_name)
 # training parameters
 update_lambda = True
 lr = 1e-4
-num_epochs = 100
+num_epochs = 40
 batch_size = 1 # int(16/n_training_fields)
 cuda_id = 0
 
@@ -44,6 +58,8 @@ dict_features = {'feature_opt':feature_opt,
                  'learned_features':learned_features,
                  'disorders': disorders,
                  'use_comp': use_comp,
+                 'network_name': network_name,
+                 'n_training_fields': n_training_fields,
                  'classifier': classifier}
 
 file_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'saved_models', exp_name)
@@ -95,7 +111,7 @@ def train(epoch, lambda_hsic):
     all_GSD_patients = 0
 
     dataset_eng_features = torch.tensor(train_loader.dataset.eng_features_val, device=device, dtype=torch.float)
-
+    gaps = []
     for batch_idx, (data, target, eng_features, label) in enumerate(tqdm(train_loader)):
         if len(data.shape)==2:
             continue
@@ -109,30 +125,34 @@ def train(epoch, lambda_hsic):
         #     g['lr'] = lr_scheduler.lr
         try:
             logits, _, gap = model(data, eng_features)
-
+            gaps.append(gap)
             classification_loss = classification_criterion(logits, target)
             # hsic_loss = independence_criterion.calc_loss(gap, eng_features)
-            hsic_loss = independence_criterion.calc_loss(gap, dataset_eng_features)
 
-            loss = classification_loss + hsic_loss
+            loss = classification_loss #+ hsic_loss
             train_loss += loss.item()
 
             # Normalize the Gradients
 
             loss = loss / grad_accumulation_steps
-            loss.backward()
+            loss.backward(retain_graph='HSIC' in feature_opt)
 
             if ((batch_idx + 1) % grad_accumulation_steps == 0) or (batch_idx + 1 == len(train_loader)):
                 # Update Optimizer
-                optimizer.step()
+                if learned_features and 'HSIC' in feature_opt:
+                    hsic_loss = independence_criterion.calc_loss(torch.vstack(gaps), dataset_eng_features)
+                    cum_hsic_loss += hsic_loss.item()
 
+                    hsic_loss.backward()
+                optimizer.step()
                 optimizer.zero_grad()
 
                 # loss.backward()
         except:
-            print()
+            print('Error in current iteration')
+            optimizer.zero_grad()
+
         cum_classification_loss += classification_loss.item()
-        cum_hsic_loss += hsic_loss.item()
 
         _, predicted = torch.max(logits.data, 1)
 

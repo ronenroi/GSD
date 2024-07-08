@@ -9,9 +9,22 @@ import torch
 from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import WeightedRandomSampler
 from PIL import Image
+import torchvision.transforms as transforms
+from torchvision.transforms import RandomRotation, RandomHorizontalFlip, Normalize
+from torchvision.transforms.functional import InterpolationMode
+import torchvision.transforms.functional as TF
 
 import ECG.feature_utils as futil
-
+# Function to perform deterministic rotation with steps of 90 degrees
+def rotate_with_steps(image, angle):
+    if angle == 90:
+        return TF.rotate(image, 270)
+    elif angle == 180:
+        return TF.rotate(image, 180)
+    elif angle == 270:
+        return TF.rotate(image, 90)
+    else:
+        return image  # no rotation
 
 # def single_rr(sig):
 #     xqrs = wfdb.processing.XQRS(sig=sig.ravel(), fs=300)
@@ -43,6 +56,9 @@ class GSDDataset(Dataset):
                                    'lyso_area2', 'lyso_area1', 'lyso_area3', 'lyso_text2', 'lyso_text1',
                                    'lyso_intensity1', 'tmre_area2', 'tmre_area1', 'tmre_area3', 'tmre_intensity1',
                                    'tmre_text1', 'tmre_text2', 'PC']
+        self.split = split
+        self.image_mean = np.array([123.0376,  23.7941, 355.9095, 710.7843])
+        self.image_std = np.array([291.6179,   86.3945,  190.8984, 1612.7529])
         # These options are called only from plot_utils.py, so need to go 1 folder up
         # if (oversample == 'af') or (oversample == 'normal'):
             # assert 0  # need to check if this still works..
@@ -133,8 +149,24 @@ class GSDDataset(Dataset):
         assert self.dataset_size == self.classes.shape[0] and self.dataset_size == self.df.shape[0] \
                # and self.dataset_size == self.eng_features_val.shape[0]
 
+    def image_transform(self, images):
+        if self.split == 'train':
+            angels = np.random.randint(0,4,images.shape[0])*90
+            images = torch.stack(
+                [rotate_with_steps(image, angle) for image, angle in zip(images, angels)])
 
-    def get_field_images(self, index, n_fields=-1):
+            transform = transforms.Compose([
+                # RandomRotation(degrees=90, resample=InterpolationMode.BILINEAR),  # Random rotation up to 30 degrees
+                RandomHorizontalFlip(p=0.5),  # Random horizontal flip with probability 0.5
+            Normalize(self.image_mean,self.image_std)
+            ])
+        else:
+            transform = transforms.Compose([
+                Normalize(self.image_mean, self.image_std)
+            ])
+        images = transform(images)
+        return images
+    def get_field_images(self, index, n_fields=-1, sampling_method='centered'):
         # name = self.image_name[index][len(self.labels[self.classes[index]]):]
         # row = name.split('r')[-1].split('c')[0]
         # row = row if len(row) > 1 else '0' + row
@@ -154,14 +186,16 @@ class GSDDataset(Dataset):
             max_n_fields = len(glob.glob(os.path.join(self.dataset_path, disorder, f'exp{exp}', f'e{exp}p{plate}', 'Images', file_name)))
 
             if max_n_fields == 16:
-                fields_ind = ['02', '03', '04', '05', '08', '07', '01', '06', '09', '10', '11', '12', '16', '15', '14','13']
+                fields_ind = ['02', '03', '04', '05', '08', '07', '01', '06', '09', '10', '11', '12', '16', '15', '14', '13']
             elif max_n_fields == 20:
                 fields_ind = ['09', '08', '07', '06', '10', '11', '01', '12', '18', '17', '16', '15']
             elif max_n_fields == 23:
                 fields_ind = ['09', '08', '07', '06', '10', '11', '01', '12', '18', '17', '16', '15', '19', '20', '21', '22']
-            elif max_n_fields == 26:
+            elif max_n_fields == 25:
                 fields_ind = ['11', '10', '09', '08', '12', '13', '01', '14', '20', '19', '18', '17', '21', '22', '23', '24']
-            elif max_n_fields == 28:
+            elif max_n_fields == 26:
+                fields_ind = ['09', '08', '07', '06', '10', '11', '12', '13', '18', '17', '01', '16', '19', '20', '21', '22']
+            elif max_n_fields == 28 or max_n_fields == 31:
                 fields_ind = ['10', '11', '12', '13', '18', '17', '01', '16', '19', '20', '21', '22', '28', '27', '26', '25']
             elif max_n_fields == 32:
                 fields_ind = ['09', '10', '11', '12', '17', '16', '01', '15', '18', '19', '20', '21', '27', '26', '25', '24']
@@ -180,7 +214,19 @@ class GSDDataset(Dataset):
                 if n_fields == 1:
                     fields_ind = np.array([1])
                 else:
-                    fields_ind = fields_ind[np.random.permutation(len(fields_ind))[:n_fields]]
+                    if sampling_method=='random':
+                        fields_ind = fields_ind[np.random.permutation(len(fields_ind))[:n_fields]]
+                    elif sampling_method =='centered':
+                        fields_ind = np.array(fields_ind).reshape((4,4))
+
+                        def find_nearest(fields_ind):
+                            center = np.argwhere(fields_ind == '01')[0]
+                            locations = np.argwhere(np.ones_like(fields_ind))
+                            distances = np.sqrt((locations[:, 0] - center[0]) ** 2 + (locations[:, 1] - center[1]) ** 2)
+                            nearest_index = np.argsort(distances)
+                            fields_ind = fields_ind.ravel()[nearest_index]
+                            return fields_ind
+                        fields_ind = find_nearest(fields_ind)[:n_fields]
 
 
             for f in fields_ind:
@@ -196,6 +242,8 @@ class GSDDataset(Dataset):
                     channel_image.append(np.array(Image.open(channel_images)).astype('float32') * ampl / 255)
                 field_images.append(np.stack(channel_image))
             field_images = np.stack(field_images)#.swapaxes(0, 1)
+
+            field_images = self.image_transform(torch.tensor(field_images)).numpy()
         except:
             field_images = np.empty(0)
         return field_images
@@ -210,6 +258,7 @@ class GSDDataset(Dataset):
             eng_features = np.empty(0)
         if self.learned_features:
             field_images = self.get_field_images(index, self.n_fields)
+
         else:
             field_images = np.zeros((1,1,1))
 
