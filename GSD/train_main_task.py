@@ -17,13 +17,13 @@ from GSD.train.train_utils import get_device, AnnealingRestartScheduler
 # experiment parameters
 if True:
     lambda_hsic = 0.05
-    feature_opt = 'Concat'  # {'None', 'Concat', 'HSIC', 'HSIC+Concat'}
+    feature_opt = 'HSIC+Concat'  # {'None', 'Concat', 'HSIC', 'HSIC+Concat'}
     engineered_features = True
     learned_features = True
     feature_subset = 'ALL'
     use_comp = False
     n_training_fields = 8
-    grad_accumulation_steps = 1
+    grad_accumulation_steps = 8
     classifier='mlp2'
     network_name='cnn2'
 else:
@@ -36,11 +36,11 @@ else:
     n_training_fields = 1
     grad_accumulation_steps = 1
     classifier = 'mlp2'
-    network_name = 'cnn'
+    network_name = 'none'
 
 disorders = ['GSD1A']#['APBD']#['GSD1A']
 
-exp_name = f"{''.join(disorders)}_eng_{engineered_features}_learned_{learned_features}_{feature_opt}_classifier_{classifier}_lambda{lambda_hsic}{'_'+str(n_training_fields) if learned_features else ''}"
+exp_name = f"{''.join(disorders)}_eng_{engineered_features}_learned_{learned_features}_{feature_opt}_classifier_{classifier}_{network_name}_lambda{lambda_hsic}{'_'+str(n_training_fields) if learned_features else ''}"
 print(exp_name)
 # training parameters
 update_lambda = True
@@ -146,11 +146,13 @@ def train(epoch, lambda_hsic):
                     hsic_loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
+                gaps = []
 
                 # loss.backward()
         except:
             print('Error in current iteration')
             optimizer.zero_grad()
+            gaps = []
 
         cum_classification_loss += classification_loss.item()
 
