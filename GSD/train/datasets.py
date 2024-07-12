@@ -43,6 +43,7 @@ class GSDDataset(Dataset):
         self.engineered_features = dict_features['engineered_features']
         self.learned_features = dict_features['learned_features']
         self.use_comp = dict_features['use_comp']
+        self.differentiate_comp = dict_features['differentiate_comp']
         assert (self.learned_features or self.engineered_features )
 
         self.data_dir = os.path.join(DATA_PATH)
@@ -214,9 +215,9 @@ class GSDDataset(Dataset):
                 if n_fields == 1:
                     fields_ind = np.array([1])
                 else:
-                    if sampling_method=='random':
+                    if sampling_method == 'random':
                         fields_ind = fields_ind[np.random.permutation(len(fields_ind))[:n_fields]]
-                    elif sampling_method =='centered':
+                    elif sampling_method == 'centered':
                         fields_ind = np.array(fields_ind).reshape((4,4))
 
                         def find_nearest(fields_ind):
@@ -280,11 +281,14 @@ class GSDDataset(Dataset):
 
     def label2class(self, labels):
         self.label_types = list(set(labels))
+        if not self.differentiate_comp:
+            self.label_types = list(set([label.replace('COMPA','NONE') for label in self.label_types]))
+            labels = [label.replace('COMPA','NONE') for label in labels]
         classes = np.zeros(len(labels),dtype=int)-1
         for i in range(len(self.label_types)):
-            classes[np.array(self.label_types[i])==labels] = i
+            classes[np.array(self.label_types[i]) == labels] = i
 
-        assert np.all(classes>=0)
+        assert np.all(classes >= 0)
         assert self.num_classes == len(self.label_types)
         return classes
 

@@ -15,17 +15,19 @@ from GSD.train.datasets import create_dataloaders
 from GSD.train.train_utils import get_device, AnnealingRestartScheduler
 
 # experiment parameters
+resume = False
 if True:
     lambda_hsic = 0.05
     feature_opt = 'HSIC+Concat'  # {'None', 'Concat', 'HSIC', 'HSIC+Concat'}
     engineered_features = True
     learned_features = True
     feature_subset = 'ALL'
-    use_comp = False
+    use_comp = True
+    differentiate_comp = False
     n_training_fields = 8
     grad_accumulation_steps = 8
-    classifier='mlp2'
-    network_name='cnn2'
+    classifier ='mlp2'
+    network_name ='cnn2'
 else:
     lambda_hsic=0
     feature_opt='Concat'
@@ -33,23 +35,27 @@ else:
     learned_features = False
     feature_subset = 'ALL'
     use_comp = False
+    differentiate_comp = False
     n_training_fields = 1
     grad_accumulation_steps = 1
     classifier = 'mlp2'
     network_name = 'none'
 
-disorders = ['GSD1A']#['APBD']#['GSD1A']
 
-exp_name = f"{''.join(disorders)}_eng_{engineered_features}_learned_{learned_features}_{feature_opt}_classifier_{classifier}_{network_name}_lambda{lambda_hsic}{'_'+str(n_training_fields) if learned_features else ''}"
+disorders = ['GSD1A']#['APBD']#['GSD1A']
+num_classes = int((len(disorders) + 1) * (use_comp*differentiate_comp*1.0 + 1))
+
+saving_strategy = 'val_loss' # 'val_accu'
+exp_name = f"{''.join(disorders)}_eng_{engineered_features}_learned_{learned_features}_{feature_opt}_classifier_{classifier}_{network_name}_lambda{lambda_hsic}{'_'+str(n_training_fields) if learned_features else ''}{f'_COMP_Nclass_{num_classes}' if use_comp else ''}"
+
 print(exp_name)
 # training parameters
 update_lambda = True
 lr = 1e-4
-num_epochs = 40
+num_epochs = 250
 batch_size = 1 # int(16/n_training_fields)
 cuda_id = 0
 
-num_classes = len(disorders) + 1
 assert num_classes>1
 
 dict_features = {'feature_opt':feature_opt,
@@ -58,6 +64,7 @@ dict_features = {'feature_opt':feature_opt,
                  'learned_features':learned_features,
                  'disorders': disorders,
                  'use_comp': use_comp,
+                 'differentiate_comp': differentiate_comp,
                  'network_name': network_name,
                  'n_training_fields': n_training_fields,
                  'classifier': classifier}
@@ -72,6 +79,32 @@ train_loader, val_loader, test_loader = create_dataloaders(batch_size, dict_feat
 
 model = HSICClassifier(num_classes=num_classes, feature_len=train_loader.dataset.feature_len,
                        dict_features=dict_features, gap_norm_opt='batch_norm').to(device)
+
+
+start_epoch= 0
+if resume:
+    if os.path.exists(os.path.join(file_dir, f'{exp_name}_params_resume.pkl')):
+        model.load_state_dict(torch.load(os.path.join(file_dir, f'{exp_name}_params_resume.pkl')))
+        print(f'Loaded model from {exp_name}_params_resume.pk')
+        optimizer = optim.Adam(model.parameters(), lr=lr, betas=(0.95, 0.99), eps=1e-08, weight_decay=0, amsgrad=False)
+
+    else:
+        model.load_state_dict(torch.load(os.path.join(file_dir, f'{exp_name}_params.pkl')))
+        print(f'Loaded model from {exp_name}_params.pk')
+        optimizer = optim.Adam(model.parameters(), lr=lr, betas=(0.95, 0.99), eps=1e-08, weight_decay=0, amsgrad=False)
+
+    try:
+        if os.path.exists(os.path.join(file_dir, f'{exp_name}_optimizer_resume.pkl')):
+            checkpoint = torch.load(os.path.join(file_dir, f'{exp_name}_optimizer_optimizer_resume.pkl'))
+        else:
+            checkpoint = torch.load(os.path.join(file_dir, f'{exp_name}_optimizer_optimizer.pkl'))
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch']
+    except:
+        print('No optimizer to load')
+else:
+    optimizer = optim.Adam(model.parameters(), lr=lr, betas=(0.95, 0.99), eps=1e-08, weight_decay=0, amsgrad=False)
+
 # no_decay = list()
 # decay = list()
 # all = list()
@@ -90,7 +123,6 @@ model = HSICClassifier(num_classes=num_classes, feature_len=train_loader.dataset
 # no_decay.append(model.fc_layer.weight)
 # no_decay.append( model.model.classifier.weight)
 # no_decay.append( model.model.classifier.bias)
-optimizer = optim.Adam(model.parameters(), lr=lr, betas=(0.95, 0.99), eps=1e-08, weight_decay=0, amsgrad=False)
 # optimizer = optim.AdamW([{'params': no_decay, 'weight_decay': 0}, {'params': decay, 'weight_decay': 0}], lr=lr)
 # optimizer = optim.AdamW(, lr=lr, betas=(0.95, 0.99), eps=1e-08, weight_decay=5)
 classification_criterion = nn.CrossEntropyLoss()
@@ -183,15 +215,15 @@ def train(epoch, lambda_hsic):
     print(f'Training Accuracy: {epoch_accuracy}, False Negative: {epoch_false_negative}')
     print(f'====> Epoch: {epoch} Losses: total={train_loss / len(train_loader.dataset):.4f}'
           f', classification={cum_classification_loss / len(train_loader.dataset):.4f},'
-          f' hsic={cum_hsic_loss / len(train_loader.dataset):.4f}')
+          f' hsic={cum_hsic_loss / len(train_loader.dataset)}')
 
 
     return lambda_hsic, (train_loss / len(train_loader.dataset))
 
 
-def valid_or_test(mode, perf_dict=None):
+def valid_or_test(epoch, mode, perf_dict=None):
     if perf_dict is None:
-        perf_dict = {'accuracy': [], 'f1': {'naf': [], 'af': []}}
+        perf_dict = {'accuracy': [], 'loss': [], 'f1': {'naf': [], 'af': []}}
     # model.eval()
     tot_loss = 0
     correct = 0
@@ -200,7 +232,7 @@ def valid_or_test(mode, perf_dict=None):
     pred_list = []
     label_list = []
     with torch.no_grad():
-        loader = val_loader if mode=='valid' else test_loader
+        loader = val_loader if mode == 'valid' else test_loader
         for batch_idx, (data, target, eng_features, label) in enumerate(tqdm(loader)):
             try:
                 if learned_features:
@@ -242,12 +274,26 @@ def valid_or_test(mode, perf_dict=None):
     epoch_accuracy = 100 * float(correct) / loader.dataset.__len__()
     epoch_false_negative = 100 * float(false_negative) / all_GSD_patients
 
-    if mode == 'valid' and (len(perf_dict['accuracy']) == 0 or epoch_accuracy > np.max(perf_dict['accuracy'])):
-        torch.save(model.state_dict(), os.path.join(file_dir, f'{exp_name}_params.pkl'))
-        print(['Saved @  ' + str(epoch_accuracy) + '%'])
+
+
+    if mode == 'valid':
+        if saving_strategy == 'val_acc':
+            best_checkpoint = len(perf_dict['accuracy']) == 0 or epoch_accuracy > np.max(perf_dict['accuracy'])
+        else:
+            best_checkpoint = len(perf_dict['accuracy']) == 0 or tot_loss < np.min(perf_dict['loss'])
+        if best_checkpoint:
+            name = os.path.join(file_dir, f'{exp_name}_optimizer_resume.pkl') if resume else os.path.join(file_dir, f'{exp_name}_optimizer.pkl')
+            torch.save({
+            'optimizer_state_dict': optimizer.state_dict(),
+            'epoch': epoch}, name)
+            name = f'{exp_name}_params_resume.pkl' if resume else f'{exp_name}_params.pkl'
+            torch.save(model.state_dict(), os.path.join(file_dir, name))
+            print(['Saved @  ' + str(epoch_accuracy) + '%'])
 
 
     perf_dict['accuracy'].append(epoch_accuracy)
+    perf_dict['loss'].append(tot_loss)
+
     perf_dict['f1']['naf'].append(f1_total[0])
     perf_dict['f1']['af'].append(f1_total[1])
 
@@ -269,10 +315,10 @@ if __name__ == "__main__":
     train_losses = []
     val_losses = []
     print(f'Started training main task, {exp_name}')
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         lambda_hsic, loss = train(epoch, lambda_hsic)
         train_losses.append(loss)
-        perf_dict, val_loss = valid_or_test(mode='valid', perf_dict=perf_dict)
+        perf_dict, val_loss = valid_or_test(epoch, mode='valid', perf_dict=perf_dict)
         val_losses.append(val_loss)
 
         plt.plot(train_losses)
@@ -281,7 +327,9 @@ if __name__ == "__main__":
         plt.yscale('log')
         plt.savefig(os.path.join(file_dir, 'plot.png'))
         plt.close()
-    model.load_state_dict(torch.load(os.path.join(file_dir, f'{exp_name}_params.pkl')))
+    name = f'{exp_name}_params_resume.pkl' if resume else f'{exp_name}_params.pkl'
+
+    model.load_state_dict(torch.load(os.path.join(file_dir, name)))
     # valid_or_test(mode='valid')
-    valid_or_test(mode='test')
+    valid_or_test(num_epochs, mode='test')
     print(f'{exp_name} finished training')
